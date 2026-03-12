@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Turiec Bee Manager — Professional</title>
+
+<!-- Minimal modern UI + responsive -->
+<style>
+:root{
+  --accent:#f7b500; --bg:#f4f6f8; --card:#fff; --muted:#666; --danger:#d9534f;
+  --radius:10px; --max-width:1100px;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Helvetica,Arial,sans-serif;background:var(--bg);color:#111}
+.header{background:var(--accent);padding:12px 16px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:20}
+.brand{display:flex;flex-direction:column}
+.brand .title{font-weight:800;font-size:18px}
+.container{max-width:var(--max-width);margin:18px auto;display:grid;grid-template-columns:320px 1fr;gap:14px;padding:0 12px}
+nav{background:var(--card);padding:12px;border-radius:var(--radius);box-shadow:0 1px 6px rgba(0,0,0,0.04)}
+.nav-item{display:flex;align-items:center;gap:10px;padding:8px;border-radius:8px;cursor:pointer}
+.nav-item.active{background:linear-gradient(90deg,var(--accent),#ffcc33);font-weight:700}
+.card{background:var(--card);padding:12px;border-radius:10px;box-shadow:0 1px 6px rgba(0,0,0,0.03)}
+.btn{background:var(--accent);border:0;padding:8px 12px;border-radius:8px;font-weight:700;cursor:pointer}
+.small{padding:6px 8px;font-size:13px}
+.input,textarea,select{width:100%;padding:8px;border-radius:8px;border:1px solid #e6e6e6;margin-top:6px}
+.row{display:flex;gap:8px;align-items:center}
+.hive-item{display:flex;justify-content:space-between;align-items:center;padding:10px;border-radius:8px;border:1px solid #f0f0f0;margin-bottom:8px}
+.photo-thumb{width:64px;height:48px;object-fit:cover;border-radius:6px;border:1px solid #eee}
+.muted{color:var(--muted);font-size:13px}
+.footer{font-size:12px;color:var(--muted);text-align:center;margin-top:8px}
+@media (max-width:900px){
+  .container{grid-template-columns:1fr; padding:0 10px}
+  nav{order:2}
+}
+</style>
+
+<!-- Leaflet + Chart.js from CDN -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+</head>
+<body>
+
+<div class="header">
+  <div style="font-size:22px">🐝</div>
+  <div class="brand">
+    <div class="title">Turiec Bee Manager — Professional</div>
+    <div style="font-size:12px;color:#111;opacity:0.85">Offline-first PWA • Langstroth / Jumbo / B / Medník • pripomienky • export</div>
+  </div>
+</div>
+
+<div class="container">
+  <nav>
+    <div class="nav-item active" data-view="dashboard">📊 Dashboard</div>
+    <div class="nav-item" data-view="hives">🏠 Úle</div>
+    <div class="nav-item" data-view="inspections">🔍 Prehliadky</div>
+    <div class="nav-item" data-view="harvests">🍯 Medobrania</div>
+    <div class="nav-item" data-view="map">🗺️ Mapa</div>
+    <div class="nav-item" data-view="reminders">🔔 Pripomienky</div>
+    <div class="nav-item" data-view="stats">📈 Štatistiky</div>
+    <div class="nav-item" data-view="backup">💾 Záloha / Export</div>
+
+    <div style="height:12px"></div>
+
+    <div class="card">
+      <div style="font-weight:700">Rýchle akcie</div>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn small" onclick="ui.showAddHive()">+ Úľ</button>
+        <button class="btn small" onclick="ui.showAddInspection()">+ Prehliadka</button>
+        <button class="btn small" onclick="ui.showAddHarvest()">+ Medobranie</button>
+      </div>
+    </div>
+
+    <div style="height:8px"></div>
+    <div style="font-size:12px" class="muted">Po prvom otvorení (online) odporúčam pridať na plochu: Share → Add to Home Screen.</div>
+  </nav>
+
+  <main id="main">
+    <!-- injected -->
+  </main>
+</div>
+
+<!-- libs -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+<script>
+/* ------------------------------
+   IndexedDB wrapper (schema)
+   ------------------------------ */
+const DB_NAME='turiec-pro-db', DB_VERSION=1;
+let dbP=null;
+function openDB(){
+  if(dbP) return dbP;
+  dbP = new Promise((resolve,reject)=>{
+    const rq = indexedDB.open(DB_NAME, DB_VERSION);
+    rq.onupgradeneeded = e => {
+      const db = e.target.result;
+      if(!db.objectStoreNames.contains('hives')){
+        const s = db.createObjectStore('hives',{keyPath:'id'});
+        s.createIndex('by_name','name',{unique:false});
+      }
+      if(!db.objectStoreNames.contains('inspections')){
+        const s = db.createObjectStore('inspections',{keyPath:'id'});
+        s.createIndex('by_date','date',{unique:false});
+        s.createIndex('by_hive','hiveId',{unique:false});
+      }
+      if(!db.objectStoreNames.contains('harvests')){
+        const s = db.createObjectStore('harvests',{keyPath:'id'});
+        s.createIndex('by_date','date',{unique:false});
+      }
+      if(!db.objectStoreNames.contains('reminders')){
+        const s = db.createObjectStore('reminders',{keyPath:'id'});
+        s.createIndex('by_date','date',{unique:false});
+      }
+      if(!db.objectStoreNames.contains('meta')){
+        db.createObjectStore('meta',{keyPath:'k'});
+      }
+    };
+    rq.onsuccess = e => resolve(e.target.result);
+    rq.onerror = e => reject(e.target.error);
+  });
+  return dbP;
+}
+async function idbPut(store, val){
+  const db = await openDB();
+  return new Promise((res,rej)=>{
+    const tx = db.transaction(store,'readwrite');
+    tx.objectStore(store).put(val);
+    tx.oncomplete = ()=> res(val);
+    tx.onerror = e => rej(e.target.error);
+  });
+}
+async function idbGet(store, key){
+  const db = await openDB();
+  return new Promise((res,rej)=>{
+    const tx = db.transaction(store,'readonly');
+    const rq = tx.objectStore(store).get(key);
+    rq.onsuccess = ()=> res(rq.result);
+    rq.onerror = e => rej(e.target.error);
+  });
+}
+async function idbAll(store){
+  const db = await openDB();
+  return new Promise((res,rej)=>{
+    const tx = db.transaction(store,'readonly');
+    const out = [];
+    const cur = tx.objectStore(store).openCursor();
+    cur.onsuccess = e => {
+      const c = e.target.result;
+      if(!c) return res(out);
+      out.push(c.value);
+      c.continue();
+    };
+    cur.onerror = e => rej(e.target.error);
+  });
+}
+async function idbDelete(store, key){
+  const db = await openDB();
+  return new Promise((res,rej)=>{
+    const tx = db.transaction(store,'readwrite');
+    tx.objectStore(store).delete(key);
+    tx.oncomplete = ()=> res();
+    tx.onerror = e => rej(e.target.error);
+  });
+}
+function uid(){ return 'id-'+Math.random().toString(36).slice(2,9)+Date.now().toString(36); }
+
+/* ------------------------------
+   Data API (convenience)
+   ------------------------------ */
+const DB = {
+  async addHive(h){ h.id = h.id || uid(); h.created = new Date().toISOString(); h.photos = h.photos || []; h.supersHistory = h.supersHistory || []; await idbPut('hives', h); return h; },
+  async updateHive(h){ if(!h.id) throw 'no id'; await idbPut('hives',h); return h; },
+  async getHive(id){ return idbGet('hives', id); },
+  async listHives(){ return idbAll('hives'); },
+  async deleteHive(id){ const ins = await idbAll('inspections'); for(const i of ins) if(i.hiveId===id) await idbDelete('inspections', i.id); await idbDelete('hives', id); },
+
+  async addInspection(i){ i.id = i.id || uid(); i.date = i.date || new Date().toISOString(); await idbPut('inspections', i); return i; },
+  async listInspections(){ return idbAll('inspections'); },
+  async deleteInspection(id){ return idbDelete('inspections', id); },
+
+  async addHarvest(h){ h.id = h.id || uid(); await idbPut('harvests', h); return h; },
+  async listHarvests(){ return idbAll('harvests'); },
+  async deleteHarvest(id){ return idbDelete('harvests', id); },
+
+  async addReminder(r){ r.id = r.id || uid(); r.active = (r.active === undefined) ? true : !!r.active; await idbPut('reminders', r); return r; },
+  async listReminders(){ return idbAll('reminders'); },
+  async deleteReminder(id){ return idbDelete('reminders', id); },
+
+  async metaGet(k){ const v = await idbGet('meta', k); return v ? v.v : null; },
+  async metaSet(k,v){ await idbPut('meta', {k:k, v:v}); return v; }
+};
+
+/* ------------------------------
+   Utility helpers
+   ------------------------------ */
+function fmt(d){ return new Date(d).toLocaleString(); }
+function csvEscape(v){ return '"'+String(v===null||v===undefined?'':v).replace(/"/g,'""')+'"'; }
+function toCSV(rows){ if(!rows.length) return ''; const keys = Object.keys(rows[0]); return keys.join(',') + '\n' + rows.map(r=>keys.map(k=>csvEscape(r[k])).join(',')).join('\n'); }
+function downloadFile(name, content, mime='text/plain'){ const blob = new Blob([content], {type:mime}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
+
+/* image resize: returns {full,thumb} base64 data URLs */
+function resizeImage(file, maxW=1200, maxH=900, thumbW=600, thumbH=400){
+  return new Promise((res,rej)=>{
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = e => {
+      img.onload = ()=>{
+        const w = img.width, h = img.height;
+        const scale = Math.min(1, maxW/w, maxH/h);
+        const cw = Math.round(w*scale), ch = Math.round(h*scale);
+        const canvas = document.createElement('canvas'); canvas.width=cw; canvas.height=ch;
+        canvas.getContext('2d').drawImage(img,0,0,cw,ch);
+        const full = canvas.toDataURL('image/jpeg', 0.85);
+        const s = Math.min(1, thumbW/cw, thumbH/ch);
+        const tw = Math.max(64, Math.round(cw*s)), th = Math.max(64, Math.round(ch*s));
+        const canvas2 = document.createElement('canvas'); canvas2.width = tw; canvas2.height = th;
+        canvas2.getContext('2d').drawImage(canvas,0,0,tw,th);
+        const thumb = canvas2.toDataURL('image/jpeg', 0.72);
+        res({full,thumb});
+      };
+      img.onerror = ()=> rej('img load error');
+      img.src = e.target.result;
+    };
+    reader.onerror = ()=> rej('file read error');
+    reader.readAsDataURL(file);
+  });
+}
+
+/* ------------------------------
+   Reminder engine (runs while app open)
+   ------------------------------ */
+let reminderTimer = null;
+async function checkReminders(){
+  const now = Date.now();
+  const rem = await DB.listReminders();
+  for(const r of rem){
+    if(!r.active) continue;
+    const due = new Date(r.date).getTime();
+    if(due <= now + 1000){
+      // notify
+      const title = `Skontroluj úľ: ${r.hiveName || '—'}`;
+      const body = `${r.reason}${r.note ? ' — ' + r.note : ''}`;
+      try{
+        if('Notification' in window && Notification.permission === 'granted'){
+          new Notification(title, {body});
+        } else {
+          alert(title + '\n' + body);
+        }
+      }catch(e){
+        alert(title + '\n' + body);
+      }
+      // mark lastSent and handle recurrence
+      r.lastSent = new Date().toISOString();
+      if(r.recurrence && r.recurrence !== 'none'){
+        const dt = new Date(r.date);
+        if(r.recurrence === 'daily') dt.setDate(dt.getDate()+1);
+        else if(r.recurrence === 'weekly') dt.setDate(dt.getDate()+7);
+        else if(r.recurrence === 'monthly') dt.setMonth(dt.getMonth()+1);
+        else if(r.recurrence.startsWith('every:')){
+          const n = parseInt(r.recurrence.split(':')[1]||'7')||7; dt.setDate(dt.getDate()+n);
+        }
+        r.date = dt.toISOString();
+        await DB.addReminder(r);
+      } else {
+        r.active = false;
+        await DB.addReminder(r);
+      }
+    }
+  }
+}
+
+/* ------------------------------
+   UI / Views
+   ------------------------------ */
+const ui = {
+  current:'dashboard',
+  async init(){
+    this.main = document.getElementById('main');
+    document.querySelectorAll('nav .nav-item').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        document.querySelectorAll('nav .nav-item').forEach(x=>x.classList.remove('active'));
+        el.classList.add('active');
+        this.showView(el.dataset.view);
+      });
+    });
+    await this.showView('dashboard');
+    // reminders every minute while open
+    if(reminderTimer) clearInterval(reminderTimer);
+    reminderTimer = setInterval(checkReminders, 60*1000);
+    await checkReminders();
+  },
+
+  async showView(name){
+    this.current = name;
+    if(name==='dashboard') return this.renderDashboard();
+    if(name==='hives') return this.renderHives();
+    if(name==='inspections') return this.renderInspections();
+    if(name==='harvests') return this.renderHarvests();
+    if(name==='map') return this.renderMap();
+    if(name==='reminders') return this.renderReminders();
+    if(name==='stats') return this.renderStats();
+    if(name==='backup') return this.renderBackup();
+  },
+
+  /* Dashboard */
+  async renderDashboard(){
+    const hives = await DB.listHives(); const ins = await DB.listInspections(); const harvests = await DB.listHarvests(); const rem = (await DB.listReminders()).filter(r=>r.active).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const totalHoney = harvests.reduce((s,h)=> s + (parseFloat(h.weight)||0), 0);
+    this.main.innerHTML = `
+      <div class="card" style="display:flex;justify-content:space-between;align-items:center">
+        <div><div style="font-weight:800">Prehľad</div><div class="muted">Rýchly súhrn</div></div>
+        <div style="text-align:right"><div style="font-weight:800">${hives.length}</div><div class="muted">úľov</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 300px;gap:12px">
+        <div class="card">
+          <div style="font-weight:700">Posledné prehliadky</div>
+          <div style="margin-top:8px">${ins.sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,6).map(i=>`<div style="padding:8px;border-radius:8px;border:1px solid #f0f0f0;margin-top:8px"><b>${escape(i.title||'Prehliadka')}</b><div class="muted">${fmt(i.date)} • ${escape(i.hiveName||'')}</div><div class="muted">Žihadlá: ${i.stings||0} • Varroa: ${i.varroa||'-'}</div></div>`).join('') || '<div class="muted">Žiadne prehliadky</div>'}</div>
+        <div class="card">
+          <div style="font-weight:700">Celkom medu</div>
+          <div style="font-size:20px;font-weight:800;margin-top:6px">${totalHoney.toFixed(2)} kg</div>
+          <div class="muted" style="margin-top:10px">Blízke pripomienky</div>
+          <div style="margin-top:8px">${rem.slice(0,5).map(r=>`<div style="padding:8px;border-radius:8px;border:1px solid #f0f0f0;margin-top:8px"><b>${escape(r.hiveName||'Úľ')}</b><div class="muted">${escape(r.reason)} • ${new Date(r.date).toLocaleString()}</div></div>`).join('') || '<div class="muted">Žiadne</div>'}</div>
+        </div>
+      </div>
+    `;
+  },
+
+  /* Hives */
+  async renderHives(){
+    const hives = await DB.listHives();
+    this.main.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-weight:800">Úle</div>
+        <div><button class="btn small" onclick="ui.showAddHive()">+ Pridať úľ</button></div>
+      </div>
+      <div id="hive-list"></div>
+    `;
+    this.renderHiveList(hives);
+  },
+  async renderHiveList(list){
+    const cont = document.getElementById('hive-list');
+    if(!list.length){ cont.innerHTML = '<div class="muted card">Žiadne úle</div>'; return; }
+    cont.innerHTML = list.map(h=>`<div class="hive-item"><div style="display:flex;gap:12px;align-items:center"><div style="width:64px;height:48px;background:#fafafa;border-radius:6px;display:flex;align-items:center;justify-content:center">${h.photos && h.photos[0] ? `<img src="${h.photos[0].thumb}" class="photo-thumb">` : '📦'}</div><div><div style="font-weight:700">${escape(h.name)}</div><div class="muted">${escape(h.type)} • ${escape(h.frameMeasure||'—')}</div><div class="muted">Lok.: ${escape(h.locationName||'—')}</div></div></div><div style="display:flex;gap:8px"><button class="small" onclick='ui.editHive("${h.id}")'>✏️</button><button class="small" onclick='ui.showAddInspection("${h.id}")'>🔍</button><button class="small" onclick='ui.addReminderForHive("${h.id}")'>🔔</button><button class="small" onclick='ui.deleteHive("${h.id}")' style="background:var(--danger);color:#fff">🗑️</button></div></div>`).join('');
+  },
+
+  async showAddHive(h){
+    const editing = !!h;
+    const data = h || {name:'',type:'Langstroth (originál)',frameMeasure:'Langstroth originál',note:'',gps:null,locationName:'',photos:[],supersHistory:[]};
+    this.main.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-weight:800">${editing?'Upraviť úľ':'Pridať úľ'}</div><div><button class="small" onclick="ui.renderHives()">Zrušiť</button></div></div>
+    <div class="card"><label>Názov</label><input id="f_name" class="input" value="${escape(data.name)}"><label>Typ</label>
+    <select id="f_type" class="input"><option ${data.type==='Langstroth (originál)'?'selected':''}>Langstroth (originál)</option><option ${data.type==='Langstroth Jumbo'?'selected':''}>Langstroth Jumbo</option><option ${data.type==='B'?'selected':''}>B</option><option ${data.type==='Medník 2/3'?'selected':''}>Medník 2/3</option><option ${data.type==='Iné'?'selected':''}>Iné</option></select>
+    <label>Rámiková miera</label><input id="f_frame" class="input" value="${escape(data.frameMeasure||'')}">
+    <label>Poznámka</label><textarea id="f_note" class="input">${escape(data.note||'')}</textarea>
+    <div style="display:flex;gap:8px;margin-top:8px"><div style="flex:1"><label>GPS (lat,lng)</label><input id="f_gps" class="input" value="${data.gps ? (data.gps.lat+','+data.gps.lng) : ''}" placeholder="48.7,19.15"></div><div style="width:180px"><label>Meno lokality</label><input id="f_loc" class="input" value="${escape(data.locationName||'')}" placeholder="Lúka pri lese"></div></div>
+    <label style="margin-top:8px">Fotky (max 3)</label><input id="f_photos" class="input" type="file" accept="image/*" multiple>
+    <div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="ui.saveHive('${data.id||''}')">${editing?'Uložiť':'Pridať'}</button><button class="small" onclick="ui.renderHives()">Zrušiť</button></div></div>`;
+  },
+
+  async saveHive(id){
+    const name = document.getElementById('f_name').value.trim(); if(!name){ alert('Názov je povinný'); return; }
+    const type = document.getElementById('f_type').value; const frame = document.getElementById('f_frame').value.trim();
+    const note = document.getElementById('f_note').value.trim(); const gpsRaw = document.getElementById('f_gps').value.trim(); const loc = document.getElementById('f_loc').value.trim();
+    let gps = null;
+    if(gpsRaw){ const p=gpsRaw.split(',').map(s=>parseFloat(s.trim())); if(p.length===2 && !isNaN(p[0]) && !isNaN(p[1])) gps={lat:p[0],lng:p[1]}; else { alert('GPS: lat,lng'); return; } }
+    const files = document.getElementById('f_photos').files; const photos=[];
+    for(let i=0;i<files.length && i<3;i++){ try{ const r = await resizeImage(files[i],1200,900,400,300); photos.push({thumb:r.thumb, full:r.full}); }catch(e){console.warn(e);} }
+    if(id){
+      const h = await DB.getHive(id);
+      h.name = name; h.type=type; h.frameMeasure=frame; h.note = note; h.gps = gps; h.locationName = loc;
+      if(photos.length) h.photos = (h.photos||[]).concat(photos);
+      await DB.updateHive(h);
+    } else {
+      await DB.addHive({name,type,frameMeasure:frame,note,gps,locationName:loc,photos});
+    }
+    await this.renderHives();
+  },
+
+  async editHive(id){ const h = await DB.getHive(id); return this.showAddHive(h); },
+  async deleteHive(id){ if(!confirm('Zmazať úľ a všetky záznamy?')) return; await DB.deleteHive(id); await this.renderHives(); },
+
+  /* Inspections: incr. fields (stings, supAdd/supRem, swarminess, queen) */
+  async renderInspections(){
+    const ins = await DB.listInspections();
+    this.main.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-weight:800">Prehliadky</div><div><button class="btn small" onclick="ui.showAddInspection()">+ Nová prehliadka</button></div></div><div id="ins-list"></div>`;
+    const list = document.getElementById('ins-list');
+    if(!ins.length) list.innerHTML = '<div class="muted card">Žiadne prehliadky</div>'; else {
+      list.innerHTML = ins.sort((a,b)=>new Date(b.date)-new Date(a.date)).map(i=>`<div class="card"><div style="display:flex;justify-content:space-between"><div><b>${escape(i.title||'Prehliadka')}</b><div class="muted">${fmt(i.date)} • ${escape(i.hiveName||'')}</div><div class="muted">Žihadlá: ${i.stings||0} • Varroa: ${i.varroa||'-'}</div></div><div style="text-align:right"><div class="muted">Nadstavky +${i.supAdd||0} / -${i.supRem||0}</div><div style="margin-top:8px"><button class="small" onclick='ui.deleteInspection("${i.id}")' style="background:var(--danger);color:#fff">Zmazať</button></div></div></div>${i.note?`<div style="margin-top:8px">${escape(i.note)}</div>`:''}${i.photos && i.photos.length?`<div style="margin-top:8px;display:flex;gap:8px">${i.photos.map(p=>`<img src="${p.thumb||p.full}" class="photo-thumb" onclick="viewImage('${p.full||p.thumb}')">`).join('')}</div>`:''}</div>`).join('');
+    }
+  },
+
+  async showAddInspection(hiveId){
+    const hives = await DB.listHives(); const sel = hives.map(h=>`<option value="${h.id}">${escape(h.name)}</option>`).join('');
+    this.main.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-weight:800">Pridať prehliadku</div><div><button class="small" onclick="ui.renderInspections()">Zrušiť</button></div></div>
+    <div class="card">
+      <label>Názov (voliteľné)</label><input id="i_title" class="input" placeholder="Kontrola">
+      <label>Úľ</label><select id="i_hive" class="input">${sel}</select>
+      <label>Dátum a čas</label><input id="i_date" class="input" type="datetime-local" value="${new Date().toISOString().slice(0,16)}">
+      <div class="row"><div style="flex:1"><label>Varroa</label><input id="i_varroa" class="input" type="number" placeholder="0"></div><div style="width:120px"><label>Žihadlá</label><input id="i_stings" class="input" type="number" placeholder="0"></div></div>
+      <div class="row"><div style="flex:1"><label>Pridané nadstavky</label><input id="i_sup_add" class="input" type="number" placeholder="0"></div><div style="width:160px"><label>Odobraté nadstavky</label><input id="i_sup_rem" class="input" type="number" placeholder="0"></div></div>
+      <label>Swarminess / matečníky</label><select id="i_sw" class="input"><option value="false">nie</option><option value="true">áno (pozor)</option></select>
+      <label>Prítomnosť matky</label><select id="i_queen" class="input"><option value="present">prítomná</option><option value="missing">chýba</option></select>
+      <label>Poznámka</label><textarea id="i_note" class="input"></textarea>
+      <label>Fotky (max 4)</label><input id="i_photos" class="input" type="file" accept="image/*" multiple>
+      <div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="ui.saveInspection()">Pridať</button><button class="small" onclick="ui.renderInspections()">Zrušiť</button></div>
+    </div>`;
+    if(hiveId) document.getElementById('i_hive').value = hiveId;
+  },
+
+  async saveInspection(){
+    const title = document.getElementById('i_title').value.trim();
+    const hiveId = document.getElementById('i_hive').value; if(!hiveId){ alert('Vyber úľ'); return; }
+    const hive = await DB.getHive(hiveId);
+    const date = document.getElementById('i_date').value; const varroa = parseInt(document.getElementById('i_varroa').value||0);
+    const stings = parseInt(document.getElementById('i_stings').value||0); const supAdd = parseInt(document.getElementById('i_sup_add').value||0); const supRem = parseInt(document.getElementById('i_sup_rem').value||0);
+    const swarm = document.getElementById('i_sw').value === 'true'; const queen = document.getElementById('i_queen').value;
+    const note = document.getElementById('i_note').value.trim(); const files = document.getElementById('i_photos').files;
+    const photos = [];
+    for(let i=0;i<files.length && i<4;i++){ try{ const r = await resizeImage(files[i],1200,900,400,300); photos.push({thumb:r.thumb, full:r.full}); }catch(e){console.warn(e);} }
+    const ins = { title, date, hiveId, hiveName: hive.name, varroa, frames:0, stings, supAdd, supRem, swarminess: swarm, queenPresent: queen==='present', note, photos };
+    await DB.addInspection(ins);
+    if(supAdd || supRem){
+      const h = await DB.getHive(hiveId);
+      h.supersHistory = h.supersHistory || [];
+      if(supAdd) h.supersHistory.push({date:new Date().toISOString(), change:+1, count:supAdd, note:'pridané nadstavky'});
+      if(supRem) h.supersHistory.push({date:new Date().toISOString(), change:-1, count:supRem, note:'odobraté nadstavky'});
+      await DB.updateHive(h);
+    }
+    if(swarm || !ins.queenPresent){
+      const reason = swarm ? 'Rojová nálada / matečníky' : 'Chýba matka / overiť';
+      const dt = new Date(); dt.setDate(dt.getDate()+7);
+      await DB.addReminder({hiveId, hiveName: hive.name, date: dt.toISOString(), reason, recurrence:'none', note:'Navrhnuté automaticky', active:true});
+      alert('Vytvorená pripomienka na ' + dt.toLocaleDateString());
+    }
+    await this.renderInspections();
+  },
+
+  async deleteInspection(id){ if(!confirm('Zmazať prehliadku?')) return; await DB.deleteInspection(id); await this.renderInspections(); },
+
+  /* Harvests */
+  async renderHarvests(){ const hs = await DB.listHarvests(); this.main.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-weight:800">Medobrania</div><div><button class="btn small" onclick="ui.showAddHarvest()">+ Pridať</button></div></div><div id="harv-list"></div>`; const list=document.getElementById('harv-list'); if(!hs.length) list.innerHTML = '<div class="muted card">Žiadne medobrania</div>'; else list.innerHTML = hs.sort((a,b)=>new Date(b.date)-new Date(a.date)).map(h=>`<div class="card" style="display:flex;justify-content:space-between;align-items:center"><div><b>${escape(h.hiveName||'Úľ')}</b><div class="muted">${fmt(h.date)}</div><div class="muted">${escape(h.notes||'')}</div></div><div style="text-align:right"><div style="font-weight:800">${parseFloat(h.weight||0).toFixed(2)} kg</div><div style="margin-top:8px"><button class="small" onclick='ui.deleteHarvest("${h.id}")' style="background:var(--danger);color:#fff">Zmazať</button></div></div></div>`).join(''); }
+  async showAddHarvest(){ const hives = await DB.listHives(); const sel = hives.map(h=>`<option value="${h.id}">${escape(h.name)}</option>`).join(''); this.main.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-weight:800">Pridať medobranie</div><div><button class="small" onclick="ui.renderHarvests()">Zrušiť</button></div></div><div class="card"><label>Úľ</label><select id="harv_hive" class="input">${sel}</select><label>Dátum</label><input id="harv_date" class="input" type="date" value="${new Date().toISOString().slice(0,10)}"><label>Hmotnosť (kg)</label><input id="harv_weight" class="input" type="number" step="0.01" placeholder="5.00"><label>Poznámka</label><textarea id="harv_note" class="input"></textarea><div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="ui.saveHarvest()">Pridať</button><button class="small" onclick="ui.renderHarvests()">Zrušiť</button></div></div>`; }
+  async saveHarvest(){ const hiveId = document.getElementById('harv_hive').value; if(!hiveId){ alert('Vyber úľ'); return; } const hive = await DB.getHive(hiveId); const date = document.getElementById('harv_date').value; const weight = parseFloat(document.getElementById('harv_weight').value||0); const notes = document.getElementById('harv_note').value.trim(); await DB.addHarvest({hiveId, hiveName: hive.name, date, weight, notes}); await this.renderHarvests(); }
+  async deleteHarvest(id){ if(!confirm('Zmazať medobranie?')) return; await DB.deleteHarvest(id); await this.renderHarvests(); },
+
+  /* Map */
+  async renderMap(){
+    this.main.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-weight:800">Mapa úľov</div><div><button class="btn small" onclick="ui.centerOnMyLocation()">🌍 Moja poloha</button></div></div><div class="card" style="height:520px;padding:0;overflow:hidden"><div id="map" style="height:100%;width:100%"></div></div>`;
+    if(typeof L === 'undefined'){ document.getElementById('map').innerHTML = '<div class="muted">Mapová knižnica sa nenačítala</div>'; return; }
+    const map = L.map('map').setView([48.7,19.15],9);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19, attribution:'&copy; OSM'}).addTo(map);
+    const hives = await DB.listHives();
+    for(const h of hives) if(h.gps && typeof h.gps.lat === 'number') L.marker([h.gps.lat,h.gps.lng]).addTo(map).bindPopup(`<b>${escape(h.name)}</b><br>${escape(h.type||'')}`);
+    this.mapInstance = map;
+  },
+  async centerOnMyLocation(){ if(!this.mapInstance){ alert('Mapa nie je pripravená'); return; } if(!navigator.geolocation){ alert('Geolokácia nie je podporovaná'); return; } navigator.geolocation.getCurrentPosition(p=>{ this.mapInstance.setView([p.coords.latitude,p.coords.longitude],13); }, e=>alert('Nepodarilo sa získať polohu: '+e.message)); },
+
+  /* Reminders */
+  async renderReminders(){ const rem = await DB.listReminders(); this.main.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-weight:800">Pripomienky</div><div><button class="btn small" onclick="ui.showAddReminder()">+ Nová</button></div></div><div id="rem-list"></div>`; const list=document.getElementById('rem-list'); if(!rem.length) list.innerHTML = '<div class="muted card">Žiadne pripomienky</div>'; else list.innerHTML = rem.sort((a,b)=>new Date(a.date)-new Date(b.date)).map(r=>`<div class="reminder-item card"><div><b>${escape(r.hiveName||'Úľ')}</b><div class="muted">${escape(r.reason)} • ${new Date(r.date).toLocaleString()} ${r.recurrence && r.recurrence!=='none' ? ' • ' + r.recurrence : ''}</div></div><div style="display:flex;gap:8px"><button class="small" onclick='ui.editReminder("${r.id}")'>✏️</button><button class="small" onclick='ui.deleteReminder("${r.id}")' style="background:var(--danger);color:#fff">🗑️</button></div></div>`).join(''); }
+  async showAddReminder(prefHiveId){
+    const hives = await DB.listHives();
+    const sel = `<option value="">-- Všetky úľe / vyber úľ --</option>` + hives.map(h=>`<option value="${h.id}">${escape(h.name)}</option>`).join('');
+    this.main.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-weight:800">Pridať pripomienku</div><div><button class="small" onclick="ui.renderReminders()">Zrušiť</button></div></div><div class="card"><label>Úľ (voliteľné)</label><select id="r_hive" class="input">${sel}</select><label>Dátum a čas</label><input id="r_date" class="input" type="datetime-local" value="${new Date().toISOString().slice(0,16)}"><label>Dôvod</label><select id="r_reason" class="input"><option>Matečníky / rojová nálada</option><option>Chýba matka / overiť</option><option>Skontrolovať zásoby</option><option>Kŕmenie</option><option>Iné</option></select><label>Poznámka</label><input id="r_note" class="input"><label>Opakovanie</label><select id="r_recur" class="input"><option value="none">žiadne</option><option value="daily">každý deň</option><option value="weekly">každý týždeň</option><option value="monthly">každý mesiac</option><option value="every:7">každých 7 dní</option></select><div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="ui.saveReminder()">Uložiť</button><button class="small" onclick="ui.renderReminders()">Zrušiť</button></div></div>`;
+    if(prefHiveId) document.getElementById('r_hive').value = prefHiveId;
+  },
+  async saveReminder(){ const hiveId = document.getElementById('r_hive').value || null; const hiveName = hiveId ? (await DB.getHive(hiveId)).name : null; const date = document.getElementById('r_date').value; if(!date){ alert('Vyber dátum'); return; } const reason = document.getElementById('r_reason').value; const note = document.getElementById('r_note').value.trim(); const recur = document.getElementById('r_recur').value; const r = {hiveId, hiveName, date: new Date(date).toISOString(), reason, note, recurrence:recur, active:true}; await DB.addReminder(r); alert('Pripomienka uložená'); await this.renderReminders(); },
+  async editReminder(id){ /* simplified: open add and set values */ const r = (await DB.listReminders()).find(x=>x.id===id); if(!r) return this.renderReminders(); await this.showAddReminder(r.hiveId); document.getElementById('r_date').value = new Date(r.date).toISOString().slice(0,16); document.getElementById('r_reason').value = r.reason || ''; document.getElementById('r_note').value = r.note || ''; document.getElementById('r_recur').value = r.recurrence || 'none'; },
+  async deleteReminder(id){ if(!confirm('Zmazať pripomienku?')) return; await DB.deleteReminder(id); await this.renderReminders(); },
+  async addReminderForHive(hiveId){ await this.showAddReminder(hiveId); },
+
+  /* Stats */
+  async renderStats(){
+    const ins = await DB.listInspections(); const harvests = await DB.listHarvests();
+    this.main.innerHTML = `<div class="card" style="font-weight:800">Štatistiky</div><div class="card"><canvas id="varroa"></canvas></div><div class="card"><canvas id="honey"></canvas></div><div class="card"><canvas id="stings"></canvas></div>`;
+    // build datasets
+    const byMonth = {}; for(const i of ins){ const d=new Date(i.date); const key = d.getFullYear()+'-'+(d.getMonth()+1); byMonth[key]=byMonth[key]||[]; if(typeof i.varroa==='number') byMonth[key].push(i.varroa); }
+    const months = Object.keys(byMonth).sort(); const varroaAvg = months.map(k=>{ const arr = byMonth[k]; return arr.length ? Math.round(arr.reduce((s,v)=>s+v,0)/arr.length*10)/10 : 0; });
+    new Chart(document.getElementById('varroa').getContext('2d'), {type:'line',data:{labels:months,datasets:[{label:'Priemerné varroa',data:varroaAvg}]}, options:{responsive:true,plugins:{legend:{display:false}}}});
+    const honey = {}; for(const h of harvests){ const d=new Date(h.date); const key=d.getFullYear()+'-'+(d.getMonth()+1); honey[key] = (honey[key]||0) + (parseFloat(h.weight)||0); } const months2 = Object.keys(honey).sort(); const vals = months2.map(k=>honey[k]);
+    new Chart(document.getElementById('honey').getContext('2d'), {type:'bar',data:{labels:months2,datasets:[{label:'Med (kg)',data:vals}]}, options:{responsive:true,plugins:{legend:{display:false}}}});
+    const st = {}; for(const i of ins){ const d=new Date(i.date); const key = d.getFullYear()+'-'+(d.getMonth()+1); st[key] = (st[key]||0) + (parseInt(i.stings)||0); } const months3 = Object.keys(st).sort(); const stvals = months3.map(k=>st[k]);
+    new Chart(document.getElementById('stings').getContext('2d'), {type:'bar',data:{labels:months3,datasets:[{label:'Žihadlá',data:stvals}]}, options:{responsive:true,plugins:{legend:{display:false}}}});
+  },
+
+  /* Backup & Export */
+  async renderBackup(){
+    this.main.innerHTML = `<div class="card" style="font-weight:800">Záloha a export</div><div class="card"><div class="muted">Stiahni kompletnú zálohu (JSON vrátane fotiek) alebo export CSV.</div><div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="ui.downloadBackup()">Stiahnuť zálohu (JSON)</button><button class="btn" onclick="ui.exportAll()">Export CSV</button><button class="small" onclick="document.getElementById('restore').click()">Obnoviť zo súboru</button></div><input id="restore" type="file" accept="application/json" style="display:none" onchange="ui.restoreFromFile(this.files)"></div>`;
+  },
+  async downloadBackup(){ const h = await DB.listHives(), i = await DB.listInspections(), hs = await DB.listHarvests(), r = await DB.listReminders(); const payload = {exportedAt:new Date().toISOString(), hives:h, inspections:i, harvests:hs, reminders:r}; downloadFile('turiec-bee-backup-'+new Date().toISOString().slice(0,10)+'.json', JSON.stringify(payload)); },
+  async restoreFromFile(files){ if(!files || !files.length) return; const text = await files[0].text(); try{ const obj = JSON.parse(text); if(!confirm('Obnoviť dáta? Aktuálne dáta budú prepísané.')) return; const req = indexedDB.deleteDatabase(DB_NAME); req.onsuccess = async ()=>{ await openDB(); if(obj.hives) for(const x of obj.hives) await DB.addHive(x); if(obj.inspections) for(const x of obj.inspections) await DB.addInspection(x); if(obj.harvests) for(const x of obj.harvests) await DB.addHarvest(x); if(obj.reminders) for(const x of obj.reminders) await DB.addReminder(x); alert('Obnova dokončená'); location.reload(); }; req.onerror = ()=> alert('Obnova zlyhala'); } catch(e){ alert('Chyba pri načítaní: '+e.message); } },
+  async exportAll(){ const h = await DB.listHives(), i = await DB.listInspections(), hs = await DB.listHarvests(); const hFlat = h.map(x=>({id:x.id,name:x.name,type:x.type,frameMeasure:x.frameMeasure,note:x.note,lat:x.gps?x.gps.lat:'',lng:x.gps?x.gps.lng:'',created:x.created})); const iFlat = i.map(x=>({id:x.id,date:x.date,hiveId:x.hiveId,hiveName:x.hiveName,title:x.title,varroa:x.varroa,frames:x.frames,stings:x.stings,supAdd:x.supAdd,supRem:x.supRem,swarminess:x.swarminess,note:x.note,photos:(x.photos?x.photos.length:0)})); const harvestFlat = hs.map(x=>({id:x.id,date:x.date,hiveId:x.hiveId,hiveName:x.hiveName,weight:x.weight,notes:x.notes})); const combined = '-- Hives --\\n' + toCSV(hFlat) + '\\n\\n-- Inspections --\\n' + toCSV(iFlat) + '\\n\\n-- Harvests --\\n' + toCSV(harvestFlat); downloadFile('turiec-bee-export-'+new Date().toISOString().slice(0,10)+'.csv', combined, 'text/plain'); },
+
+  /* other helpers */
+  async requestNotificationPermission(){ if(!('Notification' in window)) return false; if(Notification.permission === 'granted') return true; if(Notification.permission === 'denied') return false; try{ const p = await Notification.requestPermission(); return p === 'granted'; }catch(e){ return false; } },
+  async addReminderForHive(hiveId){ await this.showAddReminder(hiveId); }
+};
+window.ui = ui;
+function escape(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function viewImage(data){ const w = window.open('','_blank'); w.document.write('<img src="'+data+'" style="max-width:100%">'); }
+
+/* ------------------------------
+   Service worker (dynamic) + manifest
+   ------------------------------ */
+async function registerSW(){
+  if(!('serviceWorker' in navigator)) return;
+  const sw = `
+    const CACHE='turiec-pro-cache-v1';
+    self.addEventListener('install', e => { self.skipWaiting(); });
+    self.addEventListener('activate', e => { e.waitUntil(self.clients.claim()); });
+    self.addEventListener('fetch', e => {
+      const url = new URL(e.request.url);
+      if(url.hostname.endsWith('tile.openstreetmap.org')){
+        e.respondWith(fetch(e.request).then(r => { const c=r.clone(); caches.open(CACHE).then(ca=>ca.put(e.request,c)); return r; }).catch(()=>caches.match(e.request)));
+        return;
+      }
+      e.respondWith(caches.match(e.request).then(c => c || fetch(e.request).then(r => { if(r && r.status===200){ const copy=r.clone(); caches.open(CACHE).then(ca=>ca.put(e.request,copy)); } return r; }).catch(()=> { if(e.request.mode==='navigate') return caches.match('/'); return new Response('',{status:503}); })));
+    });
+  `;
+  try{
+    const blob = new Blob([sw], {type:'application/javascript'}); const url = URL.createObjectURL(blob); await navigator.serviceWorker.register(url); console.log('SW registered'); 
+  }catch(e){ console.warn('sw failed', e); }
+}
+function createManifest(){
+  const manifest = { name:"Turiec Bee Manager", short_name:"TuriecBee", start_url:".", display:"standalone", background_color:"#f4f6f8", theme_color:"#f7b500", icons:[{src:"data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"><rect width="120" height="120" rx="20" fill="#f7b500"/><text x="60" y="78" font-size="52" text-anchor="middle">🐝</text></svg>'), sizes:"120x120", type:"image/svg+xml"}] };
+  const blob = new Blob([JSON.stringify(manifest)], {type:'application/manifest+json'}); const url = URL.createObjectURL(blob); let link = document.querySelector('link[rel="manifest"]'); if(!link){ link = document.createElement('link'); link.rel='manifest'; document.head.appendChild(link); } link.href = url;
+}
+
+/* ------------------------------
+   Init + seed sample data (11 úľov)
+   ------------------------------ */
+window.addEventListener('load', async ()=>{
+  await openDB();
+  createManifest();
+  registerSW();
+  await ui.init();
+
+  const h = await DB.listHives();
+  if(h.length === 0){
+    const sample = [
+      {name:'U1 - Lúka', type:'Langstroth (originál)', frameMeasure:'Langstroth originál', locationName:'Lúka pri lese'},
+      {name:'U2 - Sad', type:'Medník 2/3', frameMeasure:'Medník 2/3', locationName:'Sad'},
+      {name:'U3 - Pole', type:'Langstroth Jumbo', frameMeasure:'Langstroth Jumbo', locationName:'Pole'},
+      {name:'U4 - Hrebeň', type:'B', frameMeasure:'B', locationName:'Hrebeň'},
+      {name:'U5 - Lesík', type:'Langstroth (originál)', frameMeasure:'Langstroth originál', locationName:'Lesík'},
+      {name:'U6 - Dvor', type:'Medník 2/3', frameMeasure:'Medník 2/3', locationName:'Dvor'},
+      {name:'U7 - Sady', type:'Langstroth Jumbo', frameMeasure:'Langstroth Jumbo', locationName:'Sady'},
+      {name:'U8 - Rovina', type:'B', frameMeasure:'B', locationName:'Rovina'},
+      {name:'U9 - Strmý svah', type:'Langstroth (originál)', frameMeasure:'Langstroth originál', locationName:'Svah'},
+      {name:'U10 - Vreteno', type:'Langstroth Jumbo', frameMeasure:'Langstroth Jumbo', locationName:'Vreteno'},
+      {name:'U11 - Záhrada', type:'Medník 2/3', frameMeasure:'Medník 2/3', locationName:'Záhrada'}
+    ];
+    for(const s of sample) await DB.addHive(s);
+    // sample harvest + inspection to show charts
+    await DB.addHarvest({hiveId:null, hiveName:'U1 - Lúka', date:new Date().toISOString(), weight:4.5, notes:'Ukážkový odber'});
+    await DB.addInspection({title:'Ukážková kontrola', date:new Date().toISOString(), hiveId: (await DB.listHives())[0].id, hiveName: (await DB.listHives())[0].name, varroa:2, stings:0, supAdd:0, supRem:0, swarminess:false, queenPresent:true, note:'OK'});
+    // refresh UI
+    await ui.renderHives();
+  }
+});
+</script>
+
+<div style="max-width:var(--max-width);margin:10px auto;padding:0 12px" class="footer">Hotovo — súbor je single-file PWA. Nasadenie: upload do repozitára a zapni GitHub Pages.</div>
+
+</body>
+</html>
